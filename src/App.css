@@ -1,0 +1,74 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.5rem;
+  background: #1a1a1a;
+  border-bottom: 1px solid #333;
+}
+
+.app-header h1 {
+  font-size: 1.25rem;
+  margin: 0;
+  background: linear-gradient(135deg, #646cff, #9089fc);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.tabs button {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #888;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.tabs button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tabs button.active {
+  color: #fff;
+  background: #333;
+  border-color: #444;
+}
+
+.app-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.test-container {
+  max-width: 800px;
+  margin: 0 auto;
+  height: calc(100vh - 150px);
+}
+
+.test-container .test-panel {
+  height: 100%;
+  max-height: none;
+}
+
+.vision-container {
+  height: calc(100vh - 150px);
+}
+
+.vision-container .vision-debug-panel {
+  height: 100%;
+}
