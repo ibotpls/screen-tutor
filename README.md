@@ -1,193 +1,155 @@
 # Screen Tutor
 
-An AI-powered desktop screen agent that teaches users how to use complex software — starting with DAWs — by watching their screen, understanding what they're looking at, and guiding them with voice, visual overlays, and contextual explanations. The AI is a **guide, not a driver**: it highlights, explains, and teaches. The user stays in control.
+An AI-powered desktop screen agent that teaches users how to use complex software by watching their screen, understanding what they're looking at, and guiding them with voice, visual overlays, and contextual explanations. Also detects errors, reads dialog messages, and helps debug problems.
+
+The AI is a **guide, not a driver**: it highlights, explains, and teaches. The user stays in control.
 
 **All vision runs locally. No screenshots sent to the cloud. $0 per interaction.**
 
-## The problem
+## Status
 
-DAWs like Cakewalk, Ableton Live, and FL Studio have steep learning curves. Musicians know what they want to hear but get lost in the interface. Current solutions are either:
-- YouTube tutorials (passive, not contextual)
-- Built-in help (generic, not adaptive)
-- AI tools like FL Studio's "Gopher" (text advice only, doesn't point at things, locked to one DAW)
+**Phase: Design complete, blocked on detection model.** The [Software UI Labeler](link-to-labeler-repo) project must produce a working YOLO model for Cakewalk before this project's vision pipeline can function. OCR-only mode could work sooner but the core value proposition requires element detection.
 
-Screen Tutor sits on top of the actual software and teaches in-context — highlighting elements, explaining what they do, speaking guidance aloud in a customizable voice, and adapting to what the user is currently looking at.
+---
+
+## What this does
+
+Screen Tutor sits on top of the target software as a companion app. It:
+
+1. **Sees** the UI — YOLO detects elements (knobs, buttons, faders, panels, dialogs)
+2. **Reads** text — OCR reads button labels, error messages, menu items, dialog content
+3. **Knows** what elements do — structured knowledge graph per software
+4. **Teaches** — LLM generates explanations adapted to user skill level
+5. **Highlights** — transparent overlay draws attention to specific elements
+6. **Converses** — chat panel supports both screen-aware questions and open-ended learning
+
+---
 
 ## Core concept
 
 ### Three interaction tiers
 
-- **Tier 1 — Navigation & Education (AI acts freely):** Moves overlay/highlight to correct location, explains controls, navigates user through workflows
-- **Tier 2 — Transcription (AI writes with permission):** Converts hummed melodies to MIDI, writes specific requested notes — always previewed before committing
-- **Tier 3 — Suggestions (AI recommends, user executes):** "Your low end sounds thin — try boosting 80-100Hz on the bass, here's where the EQ is" — then navigates there, but user turns the knob
+- **Tier 1 — Navigation, Education & Debugging (AI acts freely):** Highlights elements, explains controls, reads errors, diagnoses problems, guides workflows
+- **Tier 2 — Transcription (AI writes with permission):** Hum-to-MIDI, writes notes — always previewed (DAW-specific, future)
+- **Tier 3 — Suggestions (AI recommends, user executes):** "Try boosting 80-100Hz, here's the EQ" — navigates there, user turns the knob
 
-### Task decomposition
+### Two modes of interaction
 
-The product needs four distinct capabilities, each requiring a different kind of tool:
+**Screen-aware:** User clicks on or points at a UI element. Vision pipeline identifies it, teaching engine explains it.
 
-1. **See** — look at a screenshot and identify what UI elements exist, where they are, and what state they're in
-2. **Know** — have domain knowledge about what each element does in this specific software
-3. **Teach** — explain things clearly, adapt to the user's level, remember what they've learned
-4. **Locate** — given a concept ("the reverb send"), find where it is on the current screen
+**Open conversation:** User asks anything — "what is a frequency?", "how do I get started?", "why is there no sound?" LLM uses general knowledge + whatever screen context is available.
 
-LLMs are good at #3 (teaching/language) but overkill for #1 (vision/detection) and don't inherently have #2 (domain knowledge). The architecture uses the right tool for each job.
+Both modes coexist in the same chat panel.
 
 ---
 
 ## Technical architecture
 
-### Vision pipeline (all local, all free)
-
 ```
+                        Screenshot (pixels)
+                              │
+                    ┌─────────┴─────────┐
+                    │                   │
+                    ▼                   ▼
+┌──────────────────────────┐ ┌──────────────────────────┐
+│  YOLO: UI DETECTION      │ │  OCR: TEXT READING        │
+│                          │ │                          │
+│  Bounding boxes +        │ │  Reads all text:         │
+│  element classes         │ │  button labels, errors,  │
+│  (knob, button, fader,   │ │  menus, dialog content,  │
+│  error_dialog, panel...) │ │  status bar, tooltips.   │
+│                          │ │                          │
+│  Trained per-software.   │ │  Works on ANY software.  │
+│  <100ms. $0.             │ │  No training. <50ms. $0. │
+└────────────┬─────────────┘ └────────────┬─────────────┘
+             │                            │
+             └──────────┬─────────────────┘
+                        │
+                        ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 1: UI DETECTION (YOLOv8, runs locally)               │
+│  ELEMENT IDENTIFICATION                                     │
 │                                                             │
-│  Input: Screenshot (pixels)                                 │
-│  Output: Bounding boxes + coarse element classes             │
-│  Speed: <100ms on CPU. Cost: $0.                            │
-│                                                             │
-│  Trained model provided by the DAW UI Labeler project.      │
+│  Merges YOLO + OCR. A "button" with text "Solo" inside      │
+│  a "track_header" → element_id: "track_solo_button".        │
+│  An "error_dialog" with text "Audio device not found"       │
+│  → error with full message for LLM to diagnose.             │
+│  ~20ms. $0.                                                 │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 2: ELEMENT IDENTIFICATION (context + embeddings)     │
+│  KNOWLEDGE GRAPH (per-software, structured JSON)            │
 │                                                             │
-│  Input: Detected element + spatial context                  │
-│  Output: Specific element ID from knowledge base            │
+│  Element descriptions, workflows, troubleshooting trees,    │
+│  concept definitions, skill prerequisites.                  │
+│  Instant lookup. $0.                                        │
 │                                                             │
-│  Context-based lookup: a "knob" inside "ProChannel EQ"      │
-│  panel → "prochannel_eq_freq_knob". Falls back to CLIP      │
-│  embedding similarity for ambiguous cases.                  │
-│  Speed: ~20ms. Cost: $0.                                    │
-│                                                             │
-│  May collapse into Layer 1 if YOLO classification proves    │
-│  granular enough — TBD after initial training.              │
+│  Optional: OCR + LLM work without it (just less precise).   │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 3: KNOWLEDGE GRAPH (structured data, no model)       │
+│  TEACHING ENGINE (LLM)                                      │
 │                                                             │
-│  Input: Element IDs on screen                               │
-│  Output: What they do, how they relate, what to teach       │
+│  Receives STRUCTURED TEXT: detected elements, OCR text,     │
+│  knowledge graph data, conversation history, user query.    │
+│  Never receives screenshots.                                │
 │                                                             │
-│  Structured JSON/database. Instant lookup. Cost: $0.        │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
-┌─────────────────────────────────────────────────────────────┐
-│  LAYER 4: TEACHING ENGINE (small LLM or templates)          │
+│  Reasons about state, diagnoses errors, adapts to skill     │
+│  level, answers open-ended questions, walks through         │
+│  multi-step workflows. Asks user to reveal hidden state     │
+│  (guide-then-rescan).                                       │
 │                                                             │
-│  Input: Structured context from layers 1–3 + user query     │
-│  Output: Natural language explanation + highlight coords    │
-│                                                             │
-│  Small local LLM (7B via Ollama) or template system.        │
-│  No vision needed — all understanding done upstream.        │
-│  Speed: ~200–400ms. Cost: $0.                               │
+│  7B local model via Ollama or cloud LLM. ~200-400ms. $0.    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Total per interaction: <500ms latency, $0 cost, fully offline capable.**
+### Why OCR is critical
 
----
+YOLO needs to be **trained per-software**. OCR works on **any software immediately**. This creates a graceful degradation path:
 
-## Desktop app framework
+| Available | Capability |
+|---|---|
+| **YOLO + OCR + knowledge graph + LLM** | Full tutoring: precise element detection, deep explanations, guided workflows |
+| **YOLO + OCR + LLM** (no knowledge graph) | Good: element detection + text reading, LLM explains from general knowledge |
+| **OCR + LLM** (no YOLO model) | Basic: reads all text, error debugging, dialog walkthroughs, general Q&A |
+| **LLM only** (no vision) | Open conversation only: conceptual questions, general workflows |
 
-- **Tauri** (Rust-based, lightweight alternative to Electron)
-- Windows 11 primary, macOS planned
-- Runs alongside the DAW as a companion app
-- Transparent overlay window for highlighting UI elements on top of the DAW
+OCR is also what makes error detection work cross-software — YOLO spots the dialog, OCR reads the error message, LLM explains it.
 
----
+### Why the LLM is essential (not optional)
 
-## LLM provider system (teaching engine only)
+The knowledge graph stores facts about individual elements. But real users ask questions that require reasoning:
 
-The LLM is only used for natural language generation in the teaching layer. It never sees screenshots — it receives structured context (detected elements, knowledge graph data, user query) and generates explanations. Even a 7B local model works well since no vision is needed.
+| Question type | Example | Needs LLM? |
+|---|---|---|
+| "What does this knob do?" | Element lookup | Knowledge graph sufficient, LLM adapts to skill level |
+| "What is a frequency?" | General concept | **Yes** — open-ended, no screen context needed |
+| "How do I get started?" | Learning path | **Yes** — generates path from skill graph + general knowledge |
+| "Why is there no sound?" | Diagnosis | **Yes** — reasons through causes, checks visible state |
+| "What does this error mean?" | Error debugging | **Yes** — OCR reads error, LLM explains |
+| "How do I make this less muddy?" | Creative/subjective | **Yes** — combines screen state + audio knowledge |
+| "Why is my recording out of sync?" | Hidden state | **Yes** — guide-then-rescan pattern |
 
-### Provider tiers
+The knowledge graph provides accuracy for known elements. The LLM provides breadth, reasoning, adaptation, and open-ended conversation.
 
-**Paid (user brings own API key):** Claude, GPT-4o/4.1, Gemini Pro, DeepSeek, Mistral
+### Guide-then-rescan
 
-**Free (rate-limited):** OpenRouter, Groq, Google AI Studio, Together AI
-
-**Local (fully offline):** Ollama, LM Studio, LocalAI
-
-**No-LLM fallback:** Template system fills structured templates from the knowledge graph. App works with no LLM at all.
-
-All providers use the OpenAI-compatible chat completions format. User swaps providers in Settings.
-
-### Fallback chain
+When the answer depends on state behind a closed dialog:
 
 ```
-User's preferred provider → Groq → OpenRouter → Google AI Studio → Ollama → Templates
+User: "Why is my recording out of sync?"
+
+LLM (seeing current screen): "That's usually a latency issue. 
+Can you open Edit → Preferences → Audio?"
+
+[User opens dialog]
+[Vision re-scans — OCR reads all settings values]
+
+LLM (seeing new screen): "Your buffer size is 2048 samples — 
+that's adding ~46ms of latency. Try 256."
+[Highlights buffer size dropdown]
 ```
-
-The app always works — even fully offline with no LLM installed.
-
----
-
-## Voice input
-
-- **Whisper** (OpenAI's speech-to-text) or local alternative
-- Classification layer distinguishes between:
-  - Speech commands/questions ("how do I add reverb?")
-  - Humming/singing (pitched audio → melody transcription)
-  - Beatboxing (percussive audio → rhythm transcription)
-
----
-
-## Voice output / TTS
-
-The tutor speaks guidance aloud so the user can keep their eyes on the DAW.
-
-### TTS provider tiers
-
-**Paid:** ElevenLabs (best quality, voice cloning), OpenAI TTS
-
-**Free / Local:** Piper TTS, Fish Speech (local voice cloning), Coqui TTS / XTTS
-
-**Always available:** OS-native TTS (Windows SAPI), text-only fallback
-
-### Built-in voice library
-
-| Voice | Vibe |
-|-------|------|
-| **The Producer** | Chill, experienced mentor |
-| **The Engineer** | Technical, precise, detailed |
-| **The Hype Coach** | Energetic, encouraging |
-| **The Professor** | Patient, thorough, theory-focused |
-| **The Minimalist** | Brief, direct, no fluff |
-
-### Custom voice cloning
-
-Upload 10–60 seconds of audio. Routes to ElevenLabs (cloud) or Fish Speech / Coqui (local, private — voice data never leaves the machine).
-
----
-
-## Hum / melody transcription
-
-- **Spotify's Basic Pitch** — open source, polyphonic, faster than real-time
-- **Pitchfinder** (JS) for real-time monophonic pitch detection
-- Output: MIDI data, always previewed before committing
-
----
-
-## DAW communication (Tier 2)
-
-- **Cakewalk:** Keyboard shortcut simulation + potential COM automation
-- **Ableton Live:** AbletonOSC
-- **FL Studio:** Flapi
-- **Logic Pro:** Simulated keyboard shortcuts (Mac only)
-
----
-
-## Screen overlay system
-
-- Transparent always-on-top window rendered by Tauri
-- Draws: highlighted rectangles/circles, arrows, tooltip bubbles, step indicators
-- Coordinates driven by YOLO detection output
-- Handles different screen sizes, DPI scaling, DAW window positions
 
 ---
 
@@ -201,79 +163,121 @@ Upload 10–60 seconds of audio. Routes to ElevenLabs (cloud) or Fish Speech / C
   "views": {
     "track_view": {
       "description": "Main workspace — timeline with tracks, clips, and bus panes",
-      "key_elements": ["track_pane", "clips_pane", "bus_pane", "timeline_ruler", "transport"],
-      "common_tasks": ["recording", "editing clips", "arranging", "automation"]
+      "key_elements": ["track_pane", "clips_pane", "transport"],
+      "common_tasks": ["recording", "editing", "arranging"]
     },
     "console_view": {
       "description": "Mixer — channel strips with faders, inserts, sends",
-      "key_elements": ["channel_strips", "master_bus", "insert_slots", "send_knobs", "meters"],
-      "common_tasks": ["mixing levels", "adding effects", "routing", "panning"]
+      "key_elements": ["channel_strips", "master_bus", "insert_slots"],
+      "common_tasks": ["mixing", "effects", "routing"]
     }
   }
 }
 ```
 
-### Skill graph (per app)
+### Skill graph
 
 ```json
 {
-  "skills": {
-    "basic_navigation": {
-      "prerequisites": [],
-      "difficulty": "beginner",
-      "estimated_time": "5min"
-    },
-    "using_eq": {
-      "prerequisites": ["basic_navigation", "adding_effects", "understanding_frequency"],
-      "difficulty": "intermediate",
-      "estimated_time": "15min"
-    }
+  "basic_navigation": { "prerequisites": [], "difficulty": "beginner" },
+  "using_eq": { "prerequisites": ["basic_navigation", "adding_effects"], "difficulty": "intermediate" }
+}
+```
+
+### Troubleshooting trees
+
+```json
+{
+  "workflow": "troubleshoot_no_sound",
+  "steps": [
+    { "check": "Is any track soloed?", "visible_indicator": "solo_button_active", "if_yes": "Unsolo it.", "if_no": "next" },
+    { "check": "Is the track muted?", "visible_indicator": "mute_button_active", "if_yes": "Unmute it.", "if_no": "next" },
+    { "check": "Audio device configured?", "visible_indicator": null, "action": "Open Edit → Preferences → Audio." }
+  ]
+}
+```
+
+### Concept definitions
+
+```json
+{
+  "frequency": {
+    "definition": "How many times a sound wave vibrates per second, measured in Hertz (Hz).",
+    "analogies": ["Like pitch on a piano — left is low, right is high"],
+    "related": ["equalization", "spectrum", "pitch"]
   }
 }
 ```
 
-Adding a new app = new software map + skill graph in the same JSON format. The agent engine consumes them identically.
+Start with ~20 elements for MVP. Expand based on actual user questions, not pre-emptive completeness.
 
-### Knowledge sources
+---
 
-- **Tutorial video extraction:** Frame-by-frame UI detection + cursor tracking + Whisper transcription → aligned action→explanation pairs feeding the knowledge graph
-- **Documentation extraction:** Software manuals parsed into structured element→description mappings
-- **Manual curation:** Expert-written explanations for key concepts and workflows
+## LLM provider system
+
+The LLM receives structured text only. No screenshots. Small local models work.
+
+**Paid (user brings API key):** Claude, GPT-4o/4.1, Gemini Pro, DeepSeek, Mistral
+
+**Free:** OpenRouter, Groq, Google AI Studio, Together AI
+
+**Local:** Ollama (Llama 3.3 8B/70B, Mistral, Qwen), LM Studio
+
+All use OpenAI-compatible chat completions format.
+
+**Fallback chain:** User's preferred → Groq → OpenRouter → Google AI Studio → Ollama
 
 ---
 
 ## Agent orchestration
 
-System prompt receives: detected elements on screen (from vision pipeline), which DAW and view, pedagogical principles, software map data, user's skill level and learning history. **Structured text only — no screenshots, no vision tokens.**
+The LLM prompt always includes:
+- Current screen state (YOLO detections + OCR text)
+- Relevant knowledge graph entries (if available)
+- User skill level and learning history
+- Conversation history
+- Relevant workflow/troubleshooting trees
 
 Function calling:
-- `highlight_element(element_id, label)` — draw overlay on element
-- `navigate_to(concept)` — guide user to a specific UI area
+- `highlight_element(element_id, label)` — overlay on element
+- `highlight_sequence(steps[])` — multi-step guided highlights
+- `highlight_text(text_match, label)` — highlight OCR-found text region
+- `navigate_to(concept)` — guide to a UI area
+- `request_navigation(menu_path)` — ask user to open a dialog for rescan
 - `explain(topic, depth)` — contextual education
-- `transcribe_audio(audio_data)` — convert hum to MIDI
-- `write_midi(track, notes)` — inject notes into DAW
-- `speak(text)` — narrate guidance in the user's selected voice
+- `speak(text)` — narrate (when voice is implemented)
 
 ---
 
 ## Supported software
 
-**Phase 1 — Free DAWs:**
-- [ ] Cakewalk by BandLab (primary)
-- [ ] Reaper
+### Phase 1 — DAWs (validating the pipeline)
+- [ ] Cakewalk by BandLab (primary — free, Windows)
+- [ ] Reaper (free trial, cross-platform)
 
-**Phase 2 — Paid DAWs:**
-- [ ] FL Studio, Ableton Live, Studio One, Cubase, Bitwig
+### Phase 2 — Other complex software
+- [ ] Blender, GIMP, DaVinci Resolve, Unity, Unreal Engine, VS Code
 
-**Phase 3 — Beyond DAWs:**
-- [ ] Pro Tools, Reason
-- [ ] Blender, Unreal Engine, Photoshop, etc.
+### Phase 3 — General purpose
+- [ ] Any software via OCR + LLM (no YOLO model needed, basic support)
 
 ---
 
-## Dependencies
+## Platform
 
-- **[DAW UI Labeler](link-to-labeler-repo)** — separate project that generates the training data and trained YOLO models that power this app's vision pipeline. Must be built first. See that repo for details on the labeling pipeline, active learning loop, and software update handling.
+**Windows 11 for MVP.** The architecture supports cross-platform (Tauri, ONNX, per-OS OCR/capture), but testing three platforms before having a working product is a trap.
+
+When cross-platform is added:
+
+| Component | Windows | macOS | Linux |
+|---|---|---|---|
+| Tauri app | Native | Native | Native |
+| Screen capture | Win32 API | CGWindowList | X11/Wayland |
+| OCR | Windows.Media.Ocr | Vision framework | Tesseract/PaddleOCR |
+| YOLO inference | ONNX Runtime | ONNX Runtime | ONNX Runtime |
+| Overlay | Win32 layered window | NSWindow | X11 composite |
+| LLM (local) | Ollama | Ollama | Ollama |
+| TTS | Windows SAPI | macOS say | espeak/Piper |
 
 ---
 
@@ -283,23 +287,21 @@ Function calling:
 screentutor/
 ├── src-tauri/                        # Rust backend (Tauri)
 │   ├── src/
-│   │   ├── main.rs                   # App entry point
+│   │   ├── main.rs                   # Entry point
 │   │   ├── screen.rs                 # Screen capture + change detection
 │   │   ├── overlay.rs                # Transparent overlay window
-│   │   ├── audio.rs                  # Microphone input handling
-│   │   └── daw/
-│   │       ├── mod.rs                # DAW communication trait
-│   │       └── cakewalk.rs           # Cakewalk-specific implementation
+│   │   ├── ocr.rs                    # Windows.Media.Ocr integration
+│   │   └── daw/                      # DAW communication (future)
+│   │       ├── mod.rs
+│   │       └── cakewalk.rs
 │   └── Cargo.toml
 ├── src/                              # Frontend (React + TypeScript)
 │   ├── App.tsx
 │   ├── components/
-│   │   ├── Overlay.tsx
-│   │   ├── ChatPanel.tsx
-│   │   ├── VoiceInput.tsx
-│   │   ├── MidiPreview.tsx
-│   │   ├── SkillTracker.tsx
-│   │   └── Settings.tsx
+│   │   ├── Overlay.tsx               # Visual overlay renderer
+│   │   ├── ChatPanel.tsx             # Conversational interface
+│   │   ├── SkillTracker.tsx          # Learning progress (future)
+│   │   └── Settings.tsx              # Provider selection, preferences
 │   ├── providers/                    # LLM provider system
 │   │   ├── types.ts
 │   │   ├── registry.ts
@@ -308,28 +310,24 @@ screentutor/
 │   │   └── health.ts
 │   ├── vision/                       # Local vision pipeline
 │   │   ├── capture.ts               # Screenshot capture + change detection
-│   │   ├── detector.ts              # YOLOv8 inference (ONNX runtime)
-│   │   ├── identifier.ts            # Element ID resolution
-│   │   └── models/                  # Trained model files (.onnx)
-│   ├── voice/
-│   │   ├── engine.ts
-│   │   ├── voices.ts
-│   │   ├── custom-voice.ts
-│   │   └── providers/
+│   │   ├── detector.ts              # YOLOv8 inference (ONNX Runtime)
+│   │   ├── ocr.ts                   # OCR interface (calls Rust backend)
+│   │   ├── identifier.ts            # Merges YOLO + OCR → element IDs
+│   │   └── models/                  # Trained .onnx model files
 │   ├── agent/
-│   │   ├── engine.ts
-│   │   ├── pedagogy.ts
-│   │   └── tools.ts
-│   ├── knowledge/
-│   │   ├── types.ts
-│   │   ├── cakewalk/
-│   │   │   ├── software-map.json
-│   │   │   └── skill-graph.json
-│   │   └── loader.ts
-│   └── audio/
-│       ├── speech.ts
-│       ├── classifier.ts
-│       └── transcriber.ts
+│   │   ├── engine.ts                # Core agent orchestration
+│   │   ├── prompt-builder.ts        # Assembles LLM prompt from all layers
+│   │   ├── pedagogy.ts              # Skill level adaptation
+│   │   ├── conversation.ts          # Conversation history management
+│   │   └── tools.ts                 # Function calling definitions
+│   └── knowledge/
+│       ├── types.ts
+│       ├── cakewalk/
+│       │   ├── software-map.json
+│       │   ├── skill-graph.json
+│       │   ├── workflows.json
+│       │   └── concepts.json
+│       └── loader.ts
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts
@@ -338,43 +336,79 @@ screentutor/
 
 ---
 
-## MVP scope (v0.1)
+## Milestones
 
-### Must have
-- [ ] Tauri desktop app running alongside Cakewalk
-- [ ] Screen capture with change detection
-- [ ] Local vision pipeline (YOLOv8 → element ID → knowledge lookup)
-- [ ] Screen overlay highlighting detected elements
-- [ ] Teaching engine (local LLM or templates, structured text input only)
-- [ ] LLM provider system with fallback chain
-- [ ] Voice input (Whisper)
-- [ ] Voice output (TTS with built-in voice library)
-- [ ] Text chat panel
-- [ ] Basic Cakewalk software map + 10–20 starter skills
+### M0 — Overlay proof of concept (while labeler M0 runs in parallel)
 
-### Nice to have (v0.2)
+**Goal: Validate that a Tauri app can draw overlays on top of Cakewalk.**
+
+- [ ] Bare-bones Tauri app
+- [ ] Capture the Cakewalk window
+- [ ] Draw a colored rectangle at hardcoded coordinates on top of Cakewalk
+- [ ] Verify: clicking through overlay reaches the DAW, DPI scaling works, fullscreen/maximized works
+
+**If the overlay is janky:** rethink interaction model (side panel, picture-in-picture).
+
+### M1 — Detection + overlay (depends on labeler M1)
+
+**Goal: See YOLO detections drawn on real Cakewalk UI.**
+
+- [ ] Load ONNX model from labeler
+- [ ] Screen capture → YOLO inference → draw bounding boxes on overlay
+- [ ] OCR integration (Windows.Media.Ocr) — read all text on screen
+- [ ] Merge YOLO + OCR results
+- [ ] Click on an element → show its class + OCR text in a panel
+
+**This is the first "wow" moment** — the app visibly understands what's on screen.
+
+### M2 — First useful product
+
+**Goal: Something you could show to a real user.**
+
+- [ ] LLM integration (Ollama local or cloud provider)
+- [ ] Chat panel: type a question, get an answer with screen context
+- [ ] Click an element → LLM explains it using knowledge graph + OCR text
+- [ ] Basic Cakewalk knowledge: software map, ~20 element descriptions, 5 workflows
+- [ ] Error detection: OCR reads error dialog → LLM explains
+- [ ] Guide-then-rescan for one troubleshooting tree ("no sound")
+- [ ] LLM provider settings UI
+
+### M3 — Voice + polish
+
+- [ ] Voice input (Whisper speech-to-text)
+- [ ] Voice output (TTS — start with OS-native, add Piper/ElevenLabs later)
+- [ ] Built-in voice presets
+- [ ] Skill tracking / learning history
+- [ ] Multi-step sequenced highlights
+
+### Future
+
 - [ ] Custom voice cloning
-- [ ] Hum-to-MIDI via Basic Pitch
-- [ ] MIDI preview and injection into Cakewalk
-- [ ] Skill tracking / learning progress
-- [ ] Speech vs hum classification
-- [ ] Tutorial video extraction pipeline
-
-### Future (v0.3+)
+- [ ] Hum-to-MIDI (Spotify Basic Pitch)
+- [ ] MIDI injection into DAWs
 - [ ] Reaper, FL Studio, Ableton support
-- [ ] Non-DAW software
-- [ ] Community skill graph marketplace
+- [ ] Non-DAW software (Blender, Photoshop, etc.)
+- [ ] macOS and Linux support
+- [ ] Community knowledge graph marketplace
+
+---
+
+## Dependencies
+
+- **[Software UI Labeler](link-to-labeler-repo)** — produces the YOLO models. Must complete its M1 before this project's M1 can start. Not needed for overlay proof-of-concept (M0) or OCR-only mode.
 
 ---
 
 ## Key design decisions
 
-1. **All-local vision.** No screenshots sent to the cloud. $0 per interaction, <500ms, fully offline.
-2. **LLM for teaching only.** Receives structured text, never screenshots. Works with 7B local models. Template fallback means no LLM required.
-3. **Guide, not driver.** Teaches and explains. Writing to the DAW requires explicit user confirmation.
-4. **App-agnostic core.** All DAW-specific knowledge lives in JSON files. Adding a new app = new data, not new code.
-5. **Fallback chains everywhere.** LLM and TTS both degrade gracefully. App always works.
-6. **Vision model is an external dependency.** Trained by the DAW UI Labeler project, consumed here as an ONNX file.
+1. **YOLO + OCR in parallel.** YOLO detects visual elements. OCR reads text. Together: complete screen understanding. OCR alone gives basic support on untrained software.
+2. **LLM receives structured text, never screenshots.** YOLO detections + OCR text + knowledge graph → LLM reasons from text. A 7B local model works. No vision tokens.
+3. **Guide-then-rescan.** For hidden state, ask the user to open a dialog, re-analyze. Human tutors do this too.
+4. **Knowledge graph + LLM complement each other.** Knowledge graph: accuracy for known elements. LLM: breadth, reasoning, adaptation, open-ended conversation.
+5. **Windows first.** Cross-platform architecture, single-platform testing until validated.
+6. **Text + highlights before voice.** Validate the core teaching value before investing in TTS infrastructure.
+7. **App-agnostic core.** All software-specific knowledge in JSON files. New app = new data, not new code.
+8. **Start with 20 elements, not 200.** Expand knowledge graph based on actual user questions.
 
 ---
 
@@ -388,14 +422,28 @@ screentutor/
 | Simular.ai | General desktop agent, not for teaching |
 | Claude Computer Use / OpenAI Operator | General purpose, not education-focused |
 
-**Our gap:** Universal DAW support + teaching focus + customizable voice + hum transcription + visual overlays + all-local vision + API-agnostic.
+**Our gap:** Software-agnostic + teaching focus + error debugging + visual overlays + all-local vision + conversational (not just element lookup).
 
 ---
 
-## Platform
+## Voice (M3+)
 
-- **Windows 11** (primary)
-- macOS planned
+Deferred to M3. Text + highlights deliver the core value. Voice adds convenience.
+
+**When implemented:**
+- Input: Whisper speech-to-text (+ hum/beatbox classification for DAW mode)
+- Output: Pluggable TTS — OS native → Piper (free local) → ElevenLabs/OpenAI (paid cloud)
+- Built-in voice presets: The Producer, The Engineer, The Hype Coach, The Professor, The Minimalist
+- Custom voice cloning: local (Fish Speech/Coqui) or cloud (ElevenLabs)
+
+---
+
+## DAW communication (future, Tier 2)
+
+- Cakewalk: keyboard shortcuts + COM automation
+- Ableton: AbletonOSC
+- FL Studio: Flapi
+- Logic Pro: keyboard shortcuts (macOS)
 
 ---
 
@@ -405,24 +453,23 @@ screentutor/
 - Tauri: https://tauri.app
 - YOLOv8: https://github.com/ultralytics/ultralytics
 - ONNX Runtime: https://onnxruntime.ai
-- Whisper: https://github.com/openai/whisper
+- Tesseract OCR: https://github.com/tesseract-ocr/tesseract
+- PaddleOCR: https://github.com/PaddlePaddle/PaddleOCR
 
-### Audio / DAW
-- Basic Pitch: https://github.com/spotify/basic-pitch
-- AbletonOSC: https://github.com/ideoforms/AbletonOSC
-- Flapi: https://github.com/MaddyGuthridge/Flapi
-
-### TTS
-- Piper TTS: https://github.com/rhasspy/piper
-- Fish Speech: https://github.com/fishaudio/fish-speech
-- Coqui TTS: https://github.com/coqui-ai/TTS
-- ElevenLabs: https://elevenlabs.io
-
-### LLM providers
+### LLM
 - Ollama: https://ollama.com
 - OpenRouter: https://openrouter.ai
 - Groq: https://console.groq.com
-- Google AI Studio: https://aistudio.google.com
+
+### TTS (M3+)
+- Piper TTS: https://github.com/rhasspy/piper
+- Fish Speech: https://github.com/fishaudio/fish-speech
+- ElevenLabs: https://elevenlabs.io
+
+### Audio / DAW (future)
+- Basic Pitch: https://github.com/spotify/basic-pitch
+- AbletonOSC: https://github.com/ideoforms/AbletonOSC
+- Flapi: https://github.com/MaddyGuthridge/Flapi
 
 ## License
 
